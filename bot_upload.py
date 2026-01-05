@@ -5,10 +5,11 @@ import requests
 import yt_dlp
 import time
 
-# Konfigurasi File
+# --- KONFIGURASI ---
 SOURCE_FILE = 'videos.txt'
 LOG_FILE = 'processed_log.txt'
 VIDEO_FILENAME = 'ready_to_upload.mp4'
+MAX_VIDEO_SIZE_MB = 95  # Batas aman upload (Facebook API limit sekitar 100MB)
 
 def get_last_video_url():
     """Membaca file dan mengambil 1 URL paling bawah"""
@@ -21,24 +22,23 @@ def get_last_video_url():
     if not lines:
         return None, []
 
-    target_url = lines[-1]      # Ambil paling bawah
+    target_url = lines[-1]       # Ambil paling bawah
     remaining_lines = lines[:-1] # Sisanya
     return target_url, remaining_lines
 
-def update_database(remaining_lines):
-    """Menulis ulang file txt setelah 1 video berhasil diproses"""
+def remove_failed_url(remaining_lines):
+    """Menghapus URL yang gagal/kebesaran agar tidak diambil lagi"""
     with open(SOURCE_FILE, 'w', encoding='utf-8') as f:
         f.write('\n'.join(remaining_lines))
 
 def download_video(url):
     print(f"\n⬇️ Sedang mendownload: {url}")
     
-    # Hapus file sisa sebelumnya
     if os.path.exists(VIDEO_FILENAME):
         os.remove(VIDEO_FILENAME)
 
     ydl_opts = {
-        # Tetap gunakan 720p agar file ringan & upload sukses
+        # Kita set max 720p, tapi kadang durasi panjang tetap bikin file besar
         'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best',
         'outtmpl': VIDEO_FILENAME,
         'quiet': True,
@@ -63,16 +63,19 @@ def download_video(url):
             
         if not os.path.exists(VIDEO_FILENAME):
             print("❌ File video tidak ditemukan.")
-            return False, None, None
+            return False, None, None, 0
             
-        return True, video_title, video_desc
+        # Cek ukuran file dalam MB
+        file_size_mb = os.path.getsize(VIDEO_FILENAME) / (1024 * 1024)
+        print(f"📦 Ukuran File: {file_size_mb:.2f} MB")
+        
+        return True, video_title, video_desc, file_size_mb
 
     except Exception as e:
         print(f"❌ Gagal Download: {e}")
-        return False, None, None
+        return False, None, None, 0
 
 def upload_to_specific_page(page_config, title, description):
-    """Upload ke halaman spesifik"""
     if not os.path.exists(VIDEO_FILENAME):
         return False
 
@@ -86,15 +89,16 @@ def upload_to_specific_page(page_config, title, description):
     
     params = {
         'access_token': access_token,
-        'description': f"{title}\n\n{description}\n\n#viral #video #reels",
+        'description': f"{title}\n\n{description}\n\n#viral #video",
         'title': title,
-        'published': 'true', # Paksa publish agar tidak masuk draft
+        'published': 'true',
     }
     
     try:
         with open(VIDEO_FILENAME, 'rb') as video_file:
             files = {'source': video_file}
             s = requests.Session()
+            # Timeout 10 menit
             r = s.post(url, params=params, files=files, timeout=600)
             
         if r.status_code == 200:
@@ -117,56 +121,70 @@ def main():
     
     try:
         pages_config = json.loads(config_json)
-        print(f"🔥 Bot siap! Akan memproses {len(pages_config)} halaman sekaligus.")
+        print(f"🔥 Bot siap! Mode: Skip Video Bermasalah.")
     except:
         print("❌ JSON Config Error.")
         sys.exit(1)
 
-    # 2. LOOPING SEMUA HALAMAN
+    # 2. LOOP HALAMAN
     for i, page in enumerate(pages_config):
-        print(f"\n--- 🔄 MEMPROSES HALAMAN KE-{i+1}: {page.get('name', 'Unknown')} ---")
+        print(f"\n==================================================")
+        print(f"🔄 TARGET HALAMAN KE-{i+1}: {page.get('name', 'Unknown')}")
+        print(f"==================================================")
         
-        # A. Cek Stok Video
-        target_url, remaining_lines = get_last_video_url()
-        
-        if not target_url:
-            print("🏁 Stok video di videos.txt HABIS! Bot berhenti.")
-            break # Keluar dari loop jika video habis
-
-        # B. Download
-        dl_success, title, desc = download_video(target_url)
-
-        if dl_success:
-            # C. Upload ke Halaman Terkait
-            up_success = upload_to_specific_page(page, title, desc)
+        # LOOP RETRY: Terus mencoba video baru SAMPAI berhasil upload di halaman ini
+        # atau sampai video habis.
+        while True:
+            # A. Ambil Video Paling Bawah
+            target_url, remaining_lines = get_last_video_url()
             
-            if up_success:
-                # D. JIKA SUKSES: Hapus baris dari file & Lanjut ke halaman berikutnya
-                update_database(remaining_lines)
+            if not target_url:
+                print("🏁 Stok video di videos.txt HABIS TOTAL! Bot berhenti.")
+                sys.exit(0) # Keluar total karena video habis
+
+            # B. Download
+            dl_success, title, desc, size_mb = download_video(target_url)
+
+            if dl_success:
+                # C. FILTER UKURAN: Cek apakah video terlalu besar?
+                if size_mb > MAX_VIDEO_SIZE_MB:
+                    print(f"⚠️ Video terlalu besar ({size_mb:.2f} MB > {MAX_VIDEO_SIZE_MB} MB).")
+                    print("🗑️ Menghapus video ini dari antrian dan mencoba video berikutnya...")
+                    
+                    # Hapus URL ini, file video, lalu lanjut loop (continue)
+                    remove_failed_url(remaining_lines)
+                    if os.path.exists(VIDEO_FILENAME): os.remove(VIDEO_FILENAME)
+                    continue 
+
+                # D. Upload
+                up_success = upload_to_specific_page(page, title, desc)
                 
-                log_msg = f"DONE: {target_url} -> {page.get('name')} | {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                with open(LOG_FILE, 'a', encoding='utf-8') as f:
-                    f.write(log_msg)
-                
-                print(f"🎉 Video berhasil diproses. Sisa antrian: {len(remaining_lines)}")
-                
-                # Jeda istirahat agar tidak dianggap SPAM oleh Facebook
-                if i < len(pages_config) - 1:
-                    print("⏳ Istirahat 30 detik sebelum lanjut ke halaman berikutnya...")
-                    time.sleep(30) 
+                if up_success:
+                    # SUKSES: Hapus URL, simpan log, dan KELUAR dari loop retry (pindah halaman)
+                    remove_failed_url(remaining_lines)
+                    
+                    log_msg = f"DONE: {target_url} -> {page.get('name')} | Size: {size_mb:.2f}MB | {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                        f.write(log_msg)
+                    
+                    print(f"🎉 Sukses! Lanjut ke halaman berikutnya.")
+                    if os.path.exists(VIDEO_FILENAME): os.remove(VIDEO_FILENAME)
+                    
+                    # Istirahat sebentar sebelum pindah halaman
+                    time.sleep(10)
+                    break 
+                else:
+                    # GAGAL UPLOAD (Misal Error API):
+                    print("⚠️ Upload gagal (mungkin ditolak FB). Mencoba video berikutnya...")
+                    remove_failed_url(remaining_lines)
+                    if os.path.exists(VIDEO_FILENAME): os.remove(VIDEO_FILENAME)
+                    continue # Loop lagi, ambil video baru untuk halaman yang SAMA
+
             else:
-                # E. JIKA GAGAL UPLOAD: Berhenti (Sesuai permintaan 'lanjut jika sukses')
-                print("⚠️ Gagal upload ke halaman ini. Menghentikan proses berantai untuk sesi ini.")
-                break 
-        else:
-            # Jika download gagal, biasanya URL rusak. Hapus saja atau stop?
-            # Di sini kita stop untuk keamanan.
-            print("⚠️ Gagal download video. Menghentikan sesi.")
-            break
-            
-        # Bersihkan file temp sebelum lanjut
-        if os.path.exists(VIDEO_FILENAME):
-            os.remove(VIDEO_FILENAME)
+                # GAGAL DOWNLOAD (URL Rusak):
+                print("⚠️ Download gagal. Mencoba video berikutnya...")
+                remove_failed_url(remaining_lines)
+                continue
 
 if __name__ == "__main__":
     main()
