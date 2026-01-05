@@ -9,7 +9,7 @@ import time
 SOURCE_FILE = 'videos.txt'
 LOG_FILE = 'processed_log.txt'
 VIDEO_FILENAME = 'ready_to_upload.mp4'
-MAX_VIDEO_SIZE_MB = 95  # Batas aman upload (Facebook API limit sekitar 100MB)
+MAX_VIDEO_SIZE_MB = 120  # Batas aman upload (Facebook API limit sekitar 100MB)
 
 def get_last_video_url():
     """Membaca file dan mengambil 1 URL paling bawah"""
