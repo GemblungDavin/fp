@@ -11,37 +11,40 @@ LOG_FILE = 'processed_log.txt'
 VIDEO_FILENAME = 'ready_to_upload.mp4'
 
 def get_last_video_url():
+    """Membaca file dan mengambil 1 URL paling bawah"""
     if not os.path.exists(SOURCE_FILE):
-        print(f"❌ File {SOURCE_FILE} tidak ditemukan!")
-        return None, [], 0
+        return None, []
 
     with open(SOURCE_FILE, 'r', encoding='utf-8') as f:
         lines = [line.strip() for line in f if line.strip()]
 
     if not lines:
-        return None, [], 0
+        return None, []
 
-    target_url = lines[-1]
-    remaining_lines = lines[:-1]
-    queue_count = len(remaining_lines) 
-    return target_url, remaining_lines, queue_count
+    target_url = lines[-1]      # Ambil paling bawah
+    remaining_lines = lines[:-1] # Sisanya
+    return target_url, remaining_lines
+
+def update_database(remaining_lines):
+    """Menulis ulang file txt setelah 1 video berhasil diproses"""
+    with open(SOURCE_FILE, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(remaining_lines))
 
 def download_video(url):
-    print(f"⬇️ Sedang mendownload (Optimasi 720p): {url}")
+    print(f"\n⬇️ Sedang mendownload: {url}")
     
+    # Hapus file sisa sebelumnya
     if os.path.exists(VIDEO_FILENAME):
         os.remove(VIDEO_FILENAME)
 
     ydl_opts = {
-        # PERUBAHAN PENTING: Batasi tinggi video max 720 pixel
-        # Ini akan mengurangi ukuran file drastis (dari 200MB -> 30-80MB)
+        # Tetap gunakan 720p agar file ringan & upload sukses
         'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best',
         'outtmpl': VIDEO_FILENAME,
         'quiet': True,
         'cookiefile': 'cookies.txt', 
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'nocheckcertificate': True,
-        # Pakai FFmpeg untuk menyatukan audio video dengan rapi
         'postprocessors': [{
             'key': 'FFmpegVideoConvertor',
             'preferedformat': 'mp4',
@@ -62,17 +65,14 @@ def download_video(url):
             print("❌ File video tidak ditemukan.")
             return False, None, None
             
-        # Cek ukuran file
-        size_mb = os.path.getsize(VIDEO_FILENAME) / (1024 * 1024)
-        print(f"📦 Ukuran File Final: {size_mb:.2f} MB")
-        
         return True, video_title, video_desc
 
     except Exception as e:
         print(f"❌ Gagal Download: {e}")
         return False, None, None
 
-def upload_to_single_page(page_config, title, description):
+def upload_to_specific_page(page_config, title, description):
+    """Upload ke halaman spesifik"""
     if not os.path.exists(VIDEO_FILENAME):
         return False
 
@@ -80,25 +80,28 @@ def upload_to_single_page(page_config, title, description):
     access_token = page_config.get('access_token')
     page_name = page_config.get('name', page_id)
     
-    print(f"🚀 Giliran Upload ke Halaman: {page_name} ...")
+    print(f"🚀 Mengupload ke Halaman: {page_name} ...")
 
-    url = f"https://graph-video.facebook.com/v18.0/{page_id}/videos"
+    url = f"https://graph-video.facebook.com/v19.0/{page_id}/videos"
+    
     params = {
         'access_token': access_token,
-        'description': f"{title}\n\n{description}\n\n#viral #video",
+        'description': f"{title}\n\n{description}\n\n#viral #video #reels",
         'title': title,
+        'published': 'true', # Paksa publish agar tidak masuk draft
     }
     
     try:
         with open(VIDEO_FILENAME, 'rb') as video_file:
             files = {'source': video_file}
-            r = requests.post(url, params=params, files=files, timeout=600) # Timeout diperpanjang jadi 10 menit
+            s = requests.Session()
+            r = s.post(url, params=params, files=files, timeout=600)
             
         if r.status_code == 200:
-            print(f"   ✅ SUKSES! Video ID: {r.json().get('id')}")
+            print(f"   ✅ SUKSES TERBIT! Video ID: {r.json().get('id')}")
             return True
         else:
-            print(f"   ⚠️ Gagal (Code {r.status_code}): {r.text}")
+            print(f"   ⚠️ Gagal Upload (Code {r.status_code}): {r.text}")
             return False
             
     except Exception as e:
@@ -106,6 +109,7 @@ def upload_to_single_page(page_config, title, description):
         return False
 
 def main():
+    # 1. Load Config
     config_json = os.environ.get('FB_PAGES_CONFIG')
     if not config_json:
         print("❌ Secret FB_PAGES_CONFIG belum diatur!")
@@ -113,43 +117,56 @@ def main():
     
     try:
         pages_config = json.loads(config_json)
+        print(f"🔥 Bot siap! Akan memproses {len(pages_config)} halaman sekaligus.")
     except:
         print("❌ JSON Config Error.")
         sys.exit(1)
 
-    target_url, remaining_lines, queue_count = get_last_video_url()
-    
-    if not target_url:
-        print("🏁 Antrian Habis.")
-        sys.exit(0)
-
-    # LOGIKA ROUND-ROBIN
-    total_pages = len(pages_config)
-    target_page_index = queue_count % total_pages
-    selected_page = pages_config[target_page_index]
-
-    success, title, desc = download_video(target_url)
-
-    if success:
-        upload_success = upload_to_single_page(selected_page, title, desc)
+    # 2. LOOPING SEMUA HALAMAN
+    for i, page in enumerate(pages_config):
+        print(f"\n--- 🔄 MEMPROSES HALAMAN KE-{i+1}: {page.get('name', 'Unknown')} ---")
         
-        if upload_success:
-            with open(SOURCE_FILE, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(remaining_lines))
+        # A. Cek Stok Video
+        target_url, remaining_lines = get_last_video_url()
+        
+        if not target_url:
+            print("🏁 Stok video di videos.txt HABIS! Bot berhenti.")
+            break # Keluar dari loop jika video habis
+
+        # B. Download
+        dl_success, title, desc = download_video(target_url)
+
+        if dl_success:
+            # C. Upload ke Halaman Terkait
+            up_success = upload_to_specific_page(page, title, desc)
             
-            log_msg = f"UPLOADED: {target_url} -> {selected_page.get('name')} | {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            with open(LOG_FILE, 'a', encoding='utf-8') as f:
-                f.write(log_msg)
-            
-            print("🎉 Selesai! URL dihapus.")
+            if up_success:
+                # D. JIKA SUKSES: Hapus baris dari file & Lanjut ke halaman berikutnya
+                update_database(remaining_lines)
+                
+                log_msg = f"DONE: {target_url} -> {page.get('name')} | {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                    f.write(log_msg)
+                
+                print(f"🎉 Video berhasil diproses. Sisa antrian: {len(remaining_lines)}")
+                
+                # Jeda istirahat agar tidak dianggap SPAM oleh Facebook
+                if i < len(pages_config) - 1:
+                    print("⏳ Istirahat 30 detik sebelum lanjut ke halaman berikutnya...")
+                    time.sleep(30) 
+            else:
+                # E. JIKA GAGAL UPLOAD: Berhenti (Sesuai permintaan 'lanjut jika sukses')
+                print("⚠️ Gagal upload ke halaman ini. Menghentikan proses berantai untuk sesi ini.")
+                break 
         else:
-            print("⚠️ Upload Gagal. URL disimpan untuk dicoba lagi.")
-            sys.exit(1)
+            # Jika download gagal, biasanya URL rusak. Hapus saja atau stop?
+            # Di sini kita stop untuk keamanan.
+            print("⚠️ Gagal download video. Menghentikan sesi.")
+            break
             
-        if os.path.exists(VIDEO_FILENAME): os.remove(VIDEO_FILENAME)
-    else:
-        sys.exit(1)
+        # Bersihkan file temp sebelum lanjut
+        if os.path.exists(VIDEO_FILENAME):
+            os.remove(VIDEO_FILENAME)
 
 if __name__ == "__main__":
     main()
-        
