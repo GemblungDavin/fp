@@ -8,7 +8,7 @@ import time
 # Konfigurasi File
 SOURCE_FILE = 'videos.txt'
 LOG_FILE = 'processed_log.txt'
-VIDEO_FILENAME = 'ready_to_upload.mp4' # Langsung simpan dengan nama final
+VIDEO_FILENAME = 'ready_to_upload.mp4'
 
 def get_last_video_url():
     if not os.path.exists(SOURCE_FILE):
@@ -23,24 +23,29 @@ def get_last_video_url():
 
     target_url = lines[-1]
     remaining_lines = lines[:-1]
-    # Kita butuh jumlah sisa antrian untuk menentukan giliran halaman
     queue_count = len(remaining_lines) 
     return target_url, remaining_lines, queue_count
 
 def download_video(url):
-    print(f"⬇️ Sedang mendownload (Tanpa Render): {url}")
+    print(f"⬇️ Sedang mendownload (Optimasi 720p): {url}")
     
-    # Hapus file lama jika ada
     if os.path.exists(VIDEO_FILENAME):
         os.remove(VIDEO_FILENAME)
 
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': VIDEO_FILENAME, # Langsung ke nama final
+        # PERUBAHAN PENTING: Batasi tinggi video max 720 pixel
+        # Ini akan mengurangi ukuran file drastis (dari 200MB -> 30-80MB)
+        'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best',
+        'outtmpl': VIDEO_FILENAME,
         'quiet': True,
         'cookiefile': 'cookies.txt', 
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'nocheckcertificate': True,
+        # Pakai FFmpeg untuk menyatukan audio video dengan rapi
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }],
     }
     
     video_title = "Video Viral"
@@ -57,6 +62,10 @@ def download_video(url):
             print("❌ File video tidak ditemukan.")
             return False, None, None
             
+        # Cek ukuran file
+        size_mb = os.path.getsize(VIDEO_FILENAME) / (1024 * 1024)
+        print(f"📦 Ukuran File Final: {size_mb:.2f} MB")
+        
         return True, video_title, video_desc
 
     except Exception as e:
@@ -83,7 +92,7 @@ def upload_to_single_page(page_config, title, description):
     try:
         with open(VIDEO_FILENAME, 'rb') as video_file:
             files = {'source': video_file}
-            r = requests.post(url, params=params, files=files, timeout=300)
+            r = requests.post(url, params=params, files=files, timeout=600) # Timeout diperpanjang jadi 10 menit
             
         if r.status_code == 200:
             print(f"   ✅ SUKSES! Video ID: {r.json().get('id')}")
@@ -97,7 +106,6 @@ def upload_to_single_page(page_config, title, description):
         return False
 
 def main():
-    # 1. Load Config
     config_json = os.environ.get('FB_PAGES_CONFIG')
     if not config_json:
         print("❌ Secret FB_PAGES_CONFIG belum diatur!")
@@ -109,34 +117,26 @@ def main():
         print("❌ JSON Config Error.")
         sys.exit(1)
 
-    # 2. Ambil URL & Tentukan Giliran
     target_url, remaining_lines, queue_count = get_last_video_url()
     
     if not target_url:
         print("🏁 Antrian Habis.")
         sys.exit(0)
 
-    # LOGIKA BERGANTIAN (Round-Robin)
-    # Kita pakai sisa jumlah video untuk menentukan index halaman
-    # Contoh: Sisa 10 video, Halaman ada 5. Maka 10 % 5 = 0 (Halaman ke-1)
-    # Besoknya: Sisa 9 video. Maka 9 % 5 = 4 (Halaman ke-5), dst.
+    # LOGIKA ROUND-ROBIN
     total_pages = len(pages_config)
     target_page_index = queue_count % total_pages
     selected_page = pages_config[target_page_index]
 
-    # 3. Download
     success, title, desc = download_video(target_url)
 
     if success:
-        # 4. Upload ke SATU Halaman Terpilih
         upload_success = upload_to_single_page(selected_page, title, desc)
         
         if upload_success:
-            # Hapus URL dari daftar
             with open(SOURCE_FILE, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(remaining_lines))
             
-            # Catat Log
             log_msg = f"UPLOADED: {target_url} -> {selected_page.get('name')} | {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             with open(LOG_FILE, 'a', encoding='utf-8') as f:
                 f.write(log_msg)
@@ -152,4 +152,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
