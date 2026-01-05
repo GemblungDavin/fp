@@ -1,0 +1,46 @@
+name: Auto Upload FB Bot
+
+on:
+  schedule:
+    # Format Cron UTC: [Menit] [Jam] [Hari] [Bulan] [HariMinggu]
+    # 05:00 UTC = 12:00 WIB
+    # 10:00 UTC = 17:00 WIB
+    # 15:00 UTC = 22:00 WIB
+    - cron: '0 5,10,15 * * *'
+  workflow_dispatch: # Agar bisa dijalankan manual tombol "Run"
+
+permissions:
+  contents: write
+
+jobs:
+  process_video:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies (FFmpeg & Python Libs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install yt-dlp requests
+
+      - name: Jalankan Bot Upload
+        env:
+          FB_PAGES_CONFIG: ${{ secrets.FB_PAGES_CONFIG }}
+        run: python bot_upload.py
+
+      - name: Commit & Push Perubahan (Hapus URL yang sudah dipakai)
+        run: |
+          git config --global user.name "Bot Upload"
+          git config --global user.email "bot@github.com"
+          git add videos.txt processed_log.txt
+          # Commit hanya jika ada perubahan
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Bot: Update daftar video" && git push)
+          
