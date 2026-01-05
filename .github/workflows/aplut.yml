@@ -2,10 +2,8 @@ name: Auto Upload FB Bot
 
 on:
   schedule:
-    # Jadwal: Jam 12:00, 17:00, 22:00 WIB
-    # (Dalam UTC: 05:00, 10:00, 15:00)
     - cron: '0 5,10,15 * * *'
-  workflow_dispatch: # Tombol Manual Run
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -24,12 +22,13 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        # Hapus ffmpeg, cukup yt-dlp dan requests
+        # KEMBALIKAN FFmpeg (Wajib untuk perbaikan struktur video & kompresi)
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           pip install yt-dlp requests
 
       - name: Create Cookies File
-        # Membuat file cookies dari Secret
         run: |
           echo "${{ secrets.YT_COOKIES }}" > cookies.txt
 
@@ -37,13 +36,11 @@ jobs:
         env:
           FB_PAGES_CONFIG: ${{ secrets.FB_PAGES_CONFIG }}
         run: python bot_upload.py
-        # Catatan: Kita TIDAK menghapus cookies.txt di sini sesuai permintaan
 
       - name: Commit & Push Perubahan
         run: |
           git config --global user.name "Bot Upload"
           git config --global user.email "bot@github.com"
           git add videos.txt processed_log.txt
-          # Commit hanya jika ada perubahan pada file txt/log
           git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Bot: Update antrian" && git push)
           
