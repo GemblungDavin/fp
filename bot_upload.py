@@ -31,40 +31,50 @@ def get_last_video_url():
 def download_and_process(url):
     print(f"⬇️ Sedang mendownload: {url}")
     
-    # 1. Download Video
+    # Opsi yt-dlp dengan COOKIES dan User-Agent
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': 'temp_video.%(ext)s',
         'quiet': True,
+        'cookiefile': 'cookies.txt', # Menggunakan file cookies
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', # Menyamar jadi Chrome Windows
+        'nocheckcertificate': True,
     }
     
-    video_title = "Video Menarik Hari Ini" # Default title
-    video_desc = "Tonton video seru ini sampai habis!" # Default desc
+    video_title = "Video Menarik Hari Ini"
+    video_desc = "Tonton video seru ini sampai habis!"
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Ambil Info dulu
             info = ydl.extract_info(url, download=True)
             video_title = info.get('title', video_title)
-            video_desc = info.get('description', video_desc)[:400] + "..." # Potong jika kepanjangan
+            # Membersihkan deskripsi
+            raw_desc = info.get('description', '')
+            video_desc = raw_desc[:400] + "..." if len(raw_desc) > 400 else raw_desc
             
-            # Rename file hasil download ke nama standar
+            # Cek nama file hasil download
             downloaded = ydl.prepare_filename(info)
             if os.path.exists(downloaded):
                 os.rename(downloaded, VIDEO_FILENAME)
             else:
-                # Fallback untuk jaga-jaga format nama file
+                # Fallback pencarian file
                 for f in os.listdir('.'):
                     if f.startswith('temp_video'):
                         os.rename(f, VIDEO_FILENAME)
                         break
 
-        # 2. Render Ulang (FFmpeg) untuk hash baru
-        # Mengubah metadata dan sedikit re-encode audio agar dianggap file baru
+        # Cek apakah file benar-benar ada sebelum render
+        if not os.path.exists(VIDEO_FILENAME):
+            print("❌ File video tidak ditemukan setelah proses download.")
+            return False, None, None
+
+        # Render Ulang (FFmpeg)
         print("🔄 Melakukan Render Ulang (Fresh Hash)...")
         cmd = [
             'ffmpeg', '-y', '-i', VIDEO_FILENAME,
-            '-c:v', 'copy', # Copy video stream (cepat)
-            '-c:a', 'aac',  # Re-encode audio (membuat hash file berubah)
+            '-c:v', 'copy',
+            '-c:a', 'aac',
             '-metadata', 'creation_time=now',
             FINAL_FILENAME
         ]
@@ -74,7 +84,11 @@ def download_and_process(url):
 
     except Exception as e:
         print(f"❌ Gagal Download/Render: {e}")
+        # Tambahan: Cetak pesan error lebih detail jika terkait cookies
+        if "Sign in" in str(e):
+            print("⚠️ PETUNJUK: Cookies mungkin kadaluarsa. Update Secret YT_COOKIES di GitHub.")
         return False, None, None
+
 
 def upload_to_facebook(pages_config, title, description):
     if not os.path.exists(FINAL_FILENAME):
